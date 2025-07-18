@@ -3,6 +3,8 @@ package com.example.SkillBridgeDataDashboard.controller;
 import com.example.SkillBridgeDataDashboard.service.FileUploadService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -13,7 +15,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api")
-@CrossOrigin(origins = "*")
+@CrossOrigin(origins = "*") // 🔁 Replace "*" with your frontend domain later
 public class FileUploadController {
 
     @Autowired
@@ -22,10 +24,16 @@ public class FileUploadController {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
-    // 1. Upload a CSV or Excel file
+    // 1. Upload CSV/Excel file
     @PostMapping("/upload")
-    public String uploadFile(@RequestParam("file") MultipartFile file) throws IOException {
-        return fileUploadService.processFile(file);
+    public ResponseEntity<String> uploadFile(@RequestParam("file") MultipartFile file) {
+        try {
+            String result = fileUploadService.processFile(file);
+            return ResponseEntity.ok(result);
+        } catch (IOException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Upload failed: " + e.getMessage());
+        }
     }
 
     // 2. Get all table names
@@ -35,9 +43,17 @@ public class FileUploadController {
         return jdbcTemplate.queryForList(sql, String.class);
     }
 
-    // 3. Get data from a specific table
+    // 3. Get data from a specific table (with validation)
     @GetMapping("/table/{tableName}")
-    public List<Map<String, Object>> getTableData(@PathVariable String tableName) {
-        return jdbcTemplate.queryForList("SELECT * FROM " + tableName);
+    public ResponseEntity<?> getTableData(@PathVariable String tableName) {
+        String sql = "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'";
+        List<String> allowedTables = jdbcTemplate.queryForList(sql, String.class);
+
+        if (!allowedTables.contains(tableName)) {
+            return ResponseEntity.badRequest().body("Invalid table name: " + tableName);
+        }
+
+        List<Map<String, Object>> data = jdbcTemplate.queryForList("SELECT * FROM " + tableName);
+        return ResponseEntity.ok(data);
     }
 }

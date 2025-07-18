@@ -38,18 +38,26 @@ public class FileUploadService {
             List<String[]> rows = reader.readAll();
             if (rows.isEmpty()) return "CSV file is empty.";
 
-            String[] headers = rows.get(0);
-            String tableName = generateTableName(headers);
+            String[] rawHeaders = rows.get(0);
+            String[] headers = sanitizeHeaders(rawHeaders);
+            String[] filteredHeaders = filterOutId(headers);
 
-            createTableIfNotExists(tableName, headers);
+            String tableName = generateTableName(filteredHeaders);
+            createTableIfNotExists(tableName, filteredHeaders);
+            String insertSql = buildInsertSQL(tableName, filteredHeaders);
 
-            String insertSql = buildInsertSQL(tableName, Arrays.asList(headers));
             for (int i = 1; i < rows.size(); i++) {
-                jdbcTemplate.update(insertSql, (Object[]) rows.get(i));
+                String[] row = rows.get(i);
+                List<Object> values = new ArrayList<>();
+                for (int j = 0; j < headers.length; j++) {
+                    if (!headers[j].equalsIgnoreCase("id")) {
+                        values.add(row.length > j ? row[j] : null);
+                    }
+                }
+                jdbcTemplate.update(insertSql, values.toArray());
             }
 
             return "CSV uploaded to table: " + tableName;
-
         } catch (CsvException e) {
             throw new IOException("Error parsing CSV", e);
         }
@@ -63,21 +71,26 @@ public class FileUploadService {
             if (!iterator.hasNext()) return "Excel file is empty.";
 
             Row headerRow = iterator.next();
-            List<String> headers = new ArrayList<>();
+            List<String> rawHeaders = new ArrayList<>();
             for (Cell cell : headerRow) {
-                headers.add(cell.getStringCellValue());
+                rawHeaders.add(cell.getStringCellValue());
             }
 
-            String tableName = generateTableName(headers.toArray(new String[0]));
-            createTableIfNotExists(tableName, headers.toArray(new String[0]));
+            String[] headers = sanitizeHeaders(rawHeaders.toArray(new String[0]));
+            String[] filteredHeaders = filterOutId(headers);
 
-            String insertSql = buildInsertSQL(tableName, headers);
+            String tableName = generateTableName(filteredHeaders);
+            createTableIfNotExists(tableName, filteredHeaders);
+            String insertSql = buildInsertSQL(tableName, Arrays.asList(filteredHeaders));
+
             while (iterator.hasNext()) {
                 Row row = iterator.next();
                 List<Object> values = new ArrayList<>();
-                for (int i = 0; i < headers.size(); i++) {
-                    Cell cell = row.getCell(i, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
-                    values.add(cell.toString());
+                for (int i = 0; i < headers.length; i++) {
+                    if (!headers[i].equalsIgnoreCase("id")) {
+                        Cell cell = row.getCell(i, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+                        values.add(cell.toString().trim());
+                    }
                 }
                 jdbcTemplate.update(insertSql, values.toArray());
             }
@@ -86,9 +99,31 @@ public class FileUploadService {
         }
     }
 
+    private String[] sanitizeHeaders(String[] headers) {
+        Set<String> seen = new HashSet<>();
+        List<String> sanitized = new ArrayList<>();
+        for (String h : headers) {
+            String clean = sanitize(h);
+            String unique = clean;
+            int count = 1;
+            while (seen.contains(unique)) {
+                unique = clean + "_" + count++;
+            }
+            seen.add(unique);
+            sanitized.add(unique);
+        }
+        return sanitized.toArray(new String[0]);
+    }
+
+    private String[] filterOutId(String[] headers) {
+        return Arrays.stream(headers)
+                .filter(h -> !h.equalsIgnoreCase("id"))
+                .toArray(String[]::new);
+    }
+
     private String generateTableName(String[] headers) {
-        String hash = String.join("_", headers).toLowerCase();
-        return "table_" + Integer.toHexString(hash.hashCode()).replace("-", "x");
+        String base = String.join("_", headers).toLowerCase();
+        return "table_" + Integer.toHexString(base.hashCode()).replace("-", "x");
     }
 
     private void createTableIfNotExists(String tableName, String[] headers) {
@@ -98,17 +133,21 @@ public class FileUploadService {
         if (!exists) {
             StringBuilder sb = new StringBuilder("CREATE TABLE ").append(tableName).append(" (id SERIAL PRIMARY KEY");
             for (String header : headers) {
-                sb.append(", ").append(sanitize(header)).append(" TEXT");
+                sb.append(", ").append(header).append(" TEXT");
             }
             sb.append(")");
             jdbcTemplate.execute(sb.toString());
         }
     }
 
-    private String buildInsertSQL(String tableName, List<String> headers) {
-        String columns = String.join(", ", headers.stream().map(this::sanitize).toList());
-        String placeholders = String.join(", ", Collections.nCopies(headers.size(), "?"));
+    private String buildInsertSQL(String tableName, String[] headers) {
+        String columns = String.join(", ", headers);
+        String placeholders = String.join(", ", Collections.nCopies(headers.length, "?"));
         return "INSERT INTO " + tableName + " (" + columns + ") VALUES (" + placeholders + ")";
+    }
+
+    private String buildInsertSQL(String tableName, List<String> headers) {
+        return buildInsertSQL(tableName, headers.toArray(new String[0]));
     }
 
     private String sanitize(String col) {
